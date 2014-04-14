@@ -1,4 +1,4 @@
-package org.jenkinsci.plugins.pretestedintegrationmercurial;
+package org.jenkinsci.plugins.pretestedintegrationgit;
 
 import hudson.AbortException;
 import hudson.Extension;
@@ -8,14 +8,15 @@ import hudson.Launcher.ProcStarter;
 import hudson.model.BuildListener;
 import hudson.model.TaskListener;
 import hudson.model.AbstractBuild;
-import hudson.plugins.mercurial.HgExe;
-import hudson.plugins.mercurial.MercurialSCM;
+import hudson.plugins.git.GitSCM;
 import hudson.scm.SCM;
 import hudson.util.ArgumentListBuilder;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.logging.Logger;
 
 import net.sf.json.JSONObject;
@@ -26,7 +27,7 @@ import org.jenkinsci.plugins.pretestedintegration.SCMBridgeDescriptor;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.StaplerRequest;
 
-public class MercurialBridge extends AbstractSCMBridge {
+public class GitBridge extends AbstractSCMBridge {
 
 	private boolean reset;
 	private String revId;
@@ -34,8 +35,7 @@ public class MercurialBridge extends AbstractSCMBridge {
 	//private String result;
 	
 	@DataBoundConstructor
-	//public Mercurial(boolean reset, String branch, String result){
-	public MercurialBridge(boolean reset, String branches, String branch){
+	public GitBridge(boolean reset, String branches, String branch){
 		this.reset = reset;
 		this.branches = branches;
 		if(branch != null && !branch.equals(""))
@@ -63,10 +63,10 @@ public class MercurialBridge extends AbstractSCMBridge {
 	}*/
 	
 	/**
-	 * The directory in which to execute hg commands
+	 * The directory in which to execute git commands
 	 */
 	private FilePath workingDirectory = null;
-	final static String LOG_PREFIX = "[PREINT-HG] ";
+	final static String LOG_PREFIX = "[PREINT-GIT] ";
 
 	public void setWorkingDirectory(FilePath workingDirectory){
 		this.workingDirectory = workingDirectory;
@@ -76,27 +76,25 @@ public class MercurialBridge extends AbstractSCMBridge {
 		return this.workingDirectory;
 	}
 
-    private MercurialSCM findScm(AbstractBuild<?,?> build) throws InterruptedException {
+    private GitSCM findScm(AbstractBuild<?,?> build) throws InterruptedException {
         try{
             SCM scm = build.getProject().getScm();
-            MercurialSCM hg = (MercurialSCM) scm;
-            return hg;
+            GitSCM git = (GitSCM) scm;
+            return git;
         } catch (ClassCastException e) {
             throw new InterruptedException("Configured scm is not mercurial");
         }
     }
     
     private ProcStarter buildCommand(AbstractBuild<?,?> build, Launcher launcher, TaskListener listener, String... cmds) throws IOException, InterruptedException {
-    	MercurialSCM scm = findScm(build);
-        HgExe hg = new HgExe(scm, launcher, build, listener);
+    	GitSCM scm = findScm(build);
+    	
+    	String gitExe = scm.getGitExe(build.getBuiltOn(), listener);
+    	
         ArgumentListBuilder b = new ArgumentListBuilder();
-
+        b.add(gitExe);
         b.add(cmds);
-		//if the working directory has not been manually set use the build workspace
-		if(workingDirectory == null){
-			setWorkingDirectory(build.getWorkspace());
-		}
-		return hg.run(b).pwd(workingDirectory);
+        return launcher.launch().cmds(b).pwd(build.getWorkspace());
     }
 	
 	/**
@@ -109,9 +107,9 @@ public class MercurialBridge extends AbstractSCMBridge {
 	 * @throws IOException
 	 * @throws InterruptedException
 	 */
-	public int hg(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener, String... cmds) throws IOException, InterruptedException{
-		ProcStarter hg = buildCommand(build, launcher, listener,cmds);
-		int exitCode = hg.join();
+	public int git(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener, String... cmds) throws IOException, InterruptedException{
+		ProcStarter git = buildCommand(build, launcher, listener,cmds);
+		int exitCode = git.join();
 		return exitCode;
 	}
 
@@ -125,9 +123,9 @@ public class MercurialBridge extends AbstractSCMBridge {
 	 * @throws IOException
 	 * @throws InterruptedException
 	 */
-	public int hg(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener,OutputStream out, String... cmds) throws IOException, InterruptedException{
-		ProcStarter hg = buildCommand(build, launcher, listener,cmds);
-		int exitCode = hg.stdout(out).join();
+	public int git(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener,OutputStream out, String... cmds) throws IOException, InterruptedException{
+		ProcStarter git = buildCommand(build, launcher, listener,cmds);
+		int exitCode = git.stdout(out).join();
 		return exitCode;
 	}
 	
@@ -137,149 +135,160 @@ public class MercurialBridge extends AbstractSCMBridge {
 
 		logger.finest("Updating the position to the integration branch");
 		//Make sure that we are on the integration branch
-		hg(build, launcher, listener, "update","-C", getBranch());
+		git(build, launcher, listener, "checkout", getBranch());
 	}
 	
 	@Override
 	protected void mergeChanges(AbstractBuild<?,?> build, Launcher launcher, TaskListener listener, Commit<?> commit) throws IOException, InterruptedException {
 		ByteArrayOutputStream out = new ByteArrayOutputStream();
-		int exitCode = hg(build, launcher, listener, out, "merge",(String) commit.getId(),"--tool","internal:merge");
+		// Checkout master
+		int exitCode = git(build, launcher, listener, out, "merge","--squash", (String) commit.getId());
 		if(exitCode > 0){
-			logger.finest("hg command failed with exitcode: " + exitCode);
-			throw new AbortException("Could not merge. Mercurial output: " + out.toString());
+			logger.finest("git command failed with exitcode: " + exitCode);
+			throw new AbortException("Could not merge. Git output: " + out.toString());
 		}
 	}
 	
+	public String integrationTip(AbstractBuild<?,?> build, Launcher launcher, TaskListener listener, 
+			Commit<?> commit) throws IOException, InterruptedException {
+		String revision = "0";
+		if(commit == null || reset) {
+			ByteArrayOutputStream out = new ByteArrayOutputStream();
+			logger.finest("Resetting revision to last successful build");
+			
+			
+			//Get the last build on the integration branch
+			git(build,launcher, listener, out, "log", "origin/" + branch, "-n", "1", "--format=%H");
+			revision = out.toString().trim();
+		} else {
+			logger.finest("Setting revision to previous build");
+			revision = (String) commit.getId();
+		}
+		listener.getLogger().println("Base revisions is:" + revision);
+		return revision;
+	}
+	
+	protected void update(AbstractBuild<?,?> build, Launcher launcher, 
+			TaskListener listener) throws IOException, InterruptedException {
+		//
+		//ensure that we have the latest version of the integration branch
+		//TODO: hardcoded origin is bad :(
+		git(build, launcher, listener, "fetch", "origin", branch);
+	}
+	
+	protected List<String> revisions(AbstractBuild<?,?> build, Launcher launcher, 
+			TaskListener listener, Commit<?> commit) throws InterruptedException, IOException {
+		List<String> revisions = new ArrayList<String>();
+		try{ 
+			Commit<String> gitCommit = (Commit<String>) commit;
+			String localBranch = getBranch();
+			ByteArrayOutputStream out = new ByteArrayOutputStream();
+			String base = integrationTip(build, launcher, listener, commit);
+			String revSpec = "HEAD";
+			if(!(base.equals(""))){
+				revSpec = base + "..HEAD";
+			}
+			
+			int exitCode = git(build, launcher, listener, out, "log", revSpec, "--reverse","--format=%H");
+			String[] commits = out.toString().trim().split("\\n");
+			
+			if(exitCode == 0 && commits.length > 0) {
+				for(String c : commits) {
+					revisions.add(c.trim());
+				}
+			}
+		} catch (ClassCastException e) {
+			throw new IOException(LOG_PREFIX + "Commit not recognised as GitCommit" + e.getMessage());
+		}
+		return revisions;
+	}
+	
+	protected Commit<String> getNext(List<?> revisions) {
+		Commit<String> next = null;
+		if(revisions.size() > 0 && !revisions.get(0).toString().equals("")) {
+			revId = revisions.get(0).toString();
+			next = new Commit<String>(revId);
+		}
+		return next;
+	}
+	
+	/**
+	 * 1. Convert the stuff in the commit to Map<String,String>
+	 * 2. Check the current working branch if there are any more commits in that branch
+	 * 3. Check the next branch round-robin
+	 * 
+	 */
 	@Override
 	public Commit<String> nextCommit(
 			AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener, Commit<?> commit)
 			throws IOException, IllegalArgumentException{
-		logger.finest("Mercurial plugin, nextCommit invoked");
+		logger.finest("Git plugin, nextCommit invoked");
 		Commit<String> next = null;
-		String revision = "0";
-		ByteArrayOutputStream out = new ByteArrayOutputStream();
-
 		try {
-			if(commit == null || reset) {
-				logger.finest("Resetting revision to last successful build");
-				
-				//Get the last build on the integration branch
-				hg(build,launcher, listener, out, "heads", branch, "--template", "{node}");
-				revision = out.toString();
-				listener.getLogger().println(LOG_PREFIX + "Resetting revision to " + revision);
-			} else {
-				revision = (String) commit.getId();
-				logger.finest(LOG_PREFIX + "Setting revision to previous build: " + revision);
-			}
+			Commit<String> gitCommit = (Commit<String>) commit;
 			
-			listener.getLogger().println(LOG_PREFIX + "Calculating next revision from " + revision);
-			
-			//Make sure we have updated version of the integration branch
-			hg(build, launcher, listener, "pull", branch);
-			//TODO: Failsafe for when the branch does not exist
-			
-			//We need the instance of the installed scm here
-			SCM scm = build.getProject().getScm();
-			MercurialSCM hg = (MercurialSCM) scm;
-			
-			//Get the staging branch from mercurial
-			//String stage = hg.getBranch();
-			
-			String branches = getBranches();
-			out.reset();
-			int exitCode = hg(build, launcher, listener,out,"log", "-r", "branch('re:"+branches+"') and "+revision+":tip","--template","{node}\n");
-			
-			String commits = out.toString();
-			logger.finest("hg exitcode: " + exitCode);
-			logger.finest("hg log result: " + commits);
-			listener.getLogger().println("Resulting string" + commits);
-			
-			String [] commitArray = commits.split("\\n");
-		
-			if(!(exitCode > 0) && commits.length() > 0){
-				logger.finest("New revisions found");
-				//default to the first found revision
-				revId = commitArray[0];
-				if(revId.equals(revision)){
-					listener.getLogger().println(LOG_PREFIX + "Already seen commit: " + revision);
-					logger.finest("This is not the commit we're looking for");
-					if(commitArray.length > 1) {
-						revId = commitArray[1];
-						listener.getLogger().println(LOG_PREFIX + "Next commit is: " + revId);
-						logger.finest("Getting the next commit in line");
+			//Make sure that we have the latest changes before doing anything
+			update(build, launcher, listener);
 
-						out.reset();
-						hg(build, launcher, listener, out, "log", "-r", revId,"--template","{desc}");
-						
-						next = new Commit<String>(revId);
-					}
-				} else {
-					logger.finest("Grabbing the next commit naively");
-					
-					out.reset();
-					hg(build, launcher, listener, out, "log", "-r", revId,"--template","{desc}");
-					
-					listener.getLogger().println("Next commit is: " + revId);
-					
-					next = new Commit<String>(revId);
-				}
+			List<?> revisions = revisions(build, launcher, listener, commit);
+			
+			if(revisions.size() < 1) {
+			
+			//we wish to find the next branch
+			//Retrieve a list of all branches
+			
 			}
+			next = getNext(revisions);
+			if(next != null)
+				listener.getLogger().println(LOG_PREFIX + "next revision is:" + next.getId().toString());
 		} catch (InterruptedException e){
 			throw new IOException(e.getMessage());
 		} catch (ClassCastException e) {
-			logger.finest("Configured scm is not mercurial. Aborting...");
+			logger.finest("Configured scm is not git. Aborting...");
 		}
 		this.reset = false;
-		logger.finest("Mercurial plugin, nextCommit returning");
+		logger.finest("Git plugin, nextCommit returning");
 		return next;
 	}
 
 	@Override
 	public void commit(AbstractBuild<?, ?> build, Launcher launcher,
 			BuildListener listener) throws IOException, InterruptedException {
-		logger.finest("Mercurial plugin commiting");
-		hg(build, launcher, listener,"commit","-m", "Merge of revision " + revId + " succesfull.");
+		logger.finest("Git plugin commiting");
+		git(build, launcher, listener,"commit","-m", "Integrated revision " + revId);
 		
 		//push the changes back to the repo
-		hg(build, launcher, listener,"push");
+		git(build, launcher, listener,"push");
 	}
 
 	@Override
 	public void rollback(AbstractBuild<?, ?> build, Launcher launcher,
 			BuildListener listener) throws IOException, InterruptedException {
-		logger.finest("Mercurial plugin rolling back");
-		hg(build, launcher, listener, "update","-C", getBranch());
+		logger.finest("Git plugin rolling back");
+		git(build, launcher, listener, "reset", "--hard", "HEAD");
 	}
-
-	/*@Override
-	public Result getRequiredResult(){
-		return Result.fromString(result);
-	}*/
 	
 	@Extension
-	public static final class DescriptorImpl extends SCMBridgeDescriptor<MercurialBridge> {
+	public static final class DescriptorImpl extends SCMBridgeDescriptor<GitBridge> {
 		
 		public String getDisplayName(){
-			return "Mercurial";
+			return "Git";
 		}
 		
 		@Override
-		public MercurialBridge newInstance(StaplerRequest req, JSONObject formData) throws FormException {
-			MercurialBridge i = (MercurialBridge) super.newInstance(req, formData);
+		public GitBridge newInstance(StaplerRequest req, JSONObject formData) throws FormException {
+			GitBridge i = (GitBridge) super.newInstance(req, formData);
 			
-			boolean reset = formData.getJSONObject("scmBridge").getBoolean("reset");
-			String branches = formData.getJSONObject("scmBridge").getString("branches");
+			
 			String branch = formData.getJSONObject("scmBridge").getString("branch");
 			
-			i.reset = reset;
-			i.branches = branches;
+			i.reset = false;
 			i.branch = branch;
-			//i.result = result;
 			
 			save();
 			return i;
 		}
 	}
 	
-	private static Logger logger = Logger.getLogger(MercurialBridge.class.getName());
+	private static Logger logger = Logger.getLogger(GitBridge.class.getName());
 }
