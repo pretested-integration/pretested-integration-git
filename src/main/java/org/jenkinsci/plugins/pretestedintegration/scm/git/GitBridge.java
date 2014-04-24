@@ -109,8 +109,6 @@ public class GitBridge extends AbstractSCMBridge {
     public int git(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener, String... cmds) throws IOException, InterruptedException {
         ProcStarter git = buildCommand(build, launcher, listener, cmds);                
         int exitCode = git.join();
-        
-        
         return exitCode;
     }
 
