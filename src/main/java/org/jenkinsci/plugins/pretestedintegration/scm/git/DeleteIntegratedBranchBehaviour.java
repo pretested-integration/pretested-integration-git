@@ -10,43 +10,44 @@ import hudson.Extension;
 import hudson.Launcher;
 import hudson.model.AbstractBuild;
 import hudson.model.BuildListener;
-import hudson.model.Result;
 import hudson.plugins.git.Branch;
 import hudson.plugins.git.util.BuildData;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.logging.Level;
-import java.util.logging.Logger;
-import org.jenkinsci.plugins.gitclient.Git;
-import org.jenkinsci.plugins.gitclient.GitClient;
+import org.jenkinsci.plugins.pretestedintegration.AbstractSCMBridge;
 import org.jenkinsci.plugins.pretestedintegration.SCMPostBuildBehaviour;
 import org.jenkinsci.plugins.pretestedintegration.SCMPostBuildBehaviourDescriptor;
 import org.kohsuke.stapler.DataBoundConstructor;
-
 /**
  *
  * @author Mads
  */
 public class DeleteIntegratedBranchBehaviour extends SCMPostBuildBehaviour {
 
+    private static final String B_NAME = "Delete integrated branch on success";
+    
     @DataBoundConstructor
     public DeleteIntegratedBranchBehaviour() { }
 
     @Override
-    public void applyBehaviour(AbstractBuild build, Launcher launcher, BuildListener listener) {
-        listener.getLogger().println("Applying behaviiour");
-        try {
-            if(build != null && build.getResult().isBetterOrEqualTo(Result.SUCCESS)) {  
-                GitClient client = Git.with(listener, build.getEnvironment(listener)).in(build.getWorkspace()).getClient();
-                BuildData gitBuildData = build.getAction(BuildData.class);            
-                String gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next().getName();
-                client.deleteBranch(gitDataBranch);                
-            }
-        } catch (IOException ex) {
-            Logger.getLogger(DeleteIntegratedBranchBehaviour.class.getName()).log(Level.SEVERE, null, ex);
-        } catch (InterruptedException ex) {
-            Logger.getLogger(DeleteIntegratedBranchBehaviour.class.getName()).log(Level.SEVERE, null, ex);
-        }
+    public void applyBehaviour(AbstractBuild build, Launcher launcher, BuildListener listener, AbstractSCMBridge bridge) throws IOException, InterruptedException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        GitBridge gitBridge = (GitBridge)bridge;
+        BuildData gitBuildData = build.getAction(BuildData.class);
+        Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();
         
+        if(build != null && build.getResult().isBetterOrEqualTo(bridge.getRequiredResult())) {
+            listener.getLogger().println(String.format("Applying behaviour '%s'", B_NAME));
+            int delRemote = gitBridge.git(build, launcher, listener, out, "push", "origin",":"+removeOrigin(gitDataBranch.getName()));
+            if(delRemote != 0) {
+                throw new IOException(String.format( "Failed to delete the remote branch %s with the following error:%n%s", gitBridge.getBranch(), out.toString()) );
+            } 
+        }
+    }
+    
+    private String removeOrigin(String branchName) {
+        String s = branchName.substring(branchName.indexOf("/")+1, branchName.length());
+        return s;
     }
     
     @Extension
@@ -57,7 +58,7 @@ public class DeleteIntegratedBranchBehaviour extends SCMPostBuildBehaviour {
         }
         
         public String getDisplayName() {
-            return "Delete integrated branch on succesful merge";
+            return B_NAME;
         }
     }
     

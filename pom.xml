@@ -26,6 +26,11 @@
             <name>Ronni Elken Lindsgaard</name>
             <email>ronni.lindsgaard@gmail.com</email>
         </developer>
+        <developer>
+            <id>MadsNielsen</id>
+            <name>Mads Nielsen</name>
+            <email>inkspot84@gmail.com</email>
+        </developer>
     </developers>
 
     <pluginRepositories>

@@ -13,6 +13,7 @@ import hudson.plugins.git.GitSCM;
 import hudson.plugins.git.util.BuildData;
 import hudson.scm.SCM;
 import hudson.util.ArgumentListBuilder;
+import hudson.util.ListBoxModel;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -20,12 +21,16 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import org.apache.commons.lang.StringUtils;
+import org.jenkinsci.plugins.gitclient.Git;
+import org.jenkinsci.plugins.gitclient.GitClient;
 
 import org.jenkinsci.plugins.pretestedintegration.AbstractSCMBridge;
 import org.jenkinsci.plugins.pretestedintegration.Commit;
+import org.jenkinsci.plugins.pretestedintegration.PretestedIntegrationAction;
 import org.jenkinsci.plugins.pretestedintegration.SCMBridgeDescriptor;
 import org.jenkinsci.plugins.pretestedintegration.SCMPostBuildBehaviour;
 import org.jenkinsci.plugins.pretestedintegration.SCMPostBuildBehaviourDescriptor;
@@ -33,23 +38,15 @@ import org.kohsuke.stapler.DataBoundConstructor;
 
 public class GitBridge extends AbstractSCMBridge {
 
-    private boolean reset;
     private String revId; 
     private boolean deleteDevelopmentBranch;
-    
-    @DataBoundConstructor
-    public GitBridge(boolean reset, final String branch, boolean deleteDevelopmentBranch) {
-        this.reset = reset;
-        this.branch = branch;
-        this.deleteDevelopmentBranch = deleteDevelopmentBranch;
-    }
+    private String mergeOption;
 
-    public boolean getReset() {
-        return this.reset;
-    }
-    
-    public void setReset(boolean reset) {
-        this.reset = reset;
+    @DataBoundConstructor
+    public GitBridge(List<SCMPostBuildBehaviour> behaves, final String branch, String mergeOption) {
+        super(behaves);        
+        this.branch = branch;  
+        this.mergeOption = mergeOption;
     }
     
     @Override
@@ -88,7 +85,6 @@ public class GitBridge extends AbstractSCMBridge {
     private ProcStarter buildCommand(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener, String... cmds) throws IOException, InterruptedException {
         GitSCM scm = findScm(build);        
         String gitExe = scm.getGitExe(build.getBuiltOn(), listener);
-
         ArgumentListBuilder b = new ArgumentListBuilder();
         b.add(gitExe);
         b.add(cmds);
@@ -138,29 +134,33 @@ public class GitBridge extends AbstractSCMBridge {
 
     @Override
     protected void mergeChanges(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener, Commit<?> commit) throws IOException, InterruptedException {
+        int exitCode = -999;
+        int exitCodeCommit = -999;
+        
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        listener.getLogger().println( String.format( "Preparing to merge changes in commit %s to integration branch %s", (String) commit.getId(), getBranch() ) ); 
-        int exitCode = git(build, launcher, listener, out, "merge","-m", String.format("Integrated %s", (String) commit.getId()), (String) commit.getId(), "--no-ff");
+        BuildData gitBuildData = build.getAction(BuildData.class);
+        Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();        
+        listener.getLogger().println( String.format( "Preparing to merge changes in commit %s to integration branch %s", (String) commit.getId(), getBranch() ) );
+        //int exitCode = git(build, launcher, listener, out, "merge","-m", String.format("Integrated %s", gitDataBranch.getName()), (String) commit.getId(), "--no-ff");
+        if(isUseSquash()) {
+            exitCode = git(build, launcher, listener, out, "merge", "--squash", gitDataBranch.getName());
+            exitCodeCommit = git(build, launcher, listener, out, "commit", "-m", String.format("Integrated %s", gitDataBranch.getName()));
+        } else if(isUseNoFf()) {
+            exitCode = git(build, launcher, listener, out, "merge","-m", String.format("Integrated %s", gitDataBranch.getName()), (String) commit.getId(), "--no-ff");
+        } else {
+            exitCode = git(build, launcher, listener, out, "merge",(String) commit.getId());
+        }
         if (exitCode > 0) {
             listener.getLogger().println("Failed to merge changes. Error message below");
             listener.getLogger().println(out.toString());
             throw new AbortException("Could not merge. Git output: " + out.toString());
         }
-    }
-
-    public String integrationTip(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener, Commit<?> commit) throws IOException, InterruptedException {
-        String revision = "0";
-        if (commit == null || reset) {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            logger.finest("Resetting revision to last successful build");
-            git(build, launcher, listener, out, "log", "origin/" + branch, "-n", "1", "--format=%H");
-            revision = out.toString().trim();
-        } else {
-            logger.finest("Setting revision to previous build");
-            revision = (String) commit.getId();
+        
+        if (exitCodeCommit != 0 && exitCodeCommit != -999 ) {
+            listener.getLogger().println("Failed to commit merged changes. Error message below");
+            listener.getLogger().println(out.toString());
+            throw new AbortException("Could commit merges. Git output: " + out.toString());
         }
-        listener.getLogger().println( String.format( "Base revisions is:%s for branch %s", revision, branch ) );
-        return revision;
     }
 
     protected void update(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener) throws IOException, InterruptedException {		
@@ -168,63 +168,30 @@ public class GitBridge extends AbstractSCMBridge {
         logger.finest( String.format( "Fetching latest version of integraion branch: %s", branch) );        
         git(build, launcher, listener, "fetch", "origin", branch);
     }
-
-    protected List<String> revisions(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener, Commit<?> commit) throws InterruptedException, IOException {
-        List<String> revisions = new ArrayList<String>();
-        try {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            String base = integrationTip(build, launcher, listener, commit);
-            String revSpec = "HEAD";
-            if (!(base.equals(""))) {
-                revSpec = base + "..HEAD";
-            }
-
-            //int exitCode = git(build, launcher, listener, out, "log", revSpec, "--reverse", "--format=%H");
-            int exitCode = git(build, launcher, listener, out, "log", revSpec, "--format=%H");
-            String[] commits = out.toString().trim().split("\\n");
-
-            if (exitCode == 0 && commits.length > 0) {
-                for (String c : commits) {
-                    if(!StringUtils.isBlank(c)) {
-                        return Arrays.asList(c);
-                    }
-                }
-            }
-        } catch (ClassCastException e) {
-            throw new IOException(LOG_PREFIX + "Commit not recognised as GitCommit" + e.getMessage());
-        }
-        return revisions;
-    }
-
-    protected Commit<String> getNext(Branch branch) {
-        Commit<String> next = new Commit<String>(branch.getSHA1String());
-        return next;
-    }
-
+    
     /**
      * 1. Convert the stuff in the commit to Map<String,String>
      * 2. Check the current working branch if there are any more commits in that
      * branch 3. Check the next branch round-robin
      *
+     * @return 
+     * @throws java.io.IOException
      */
     @Override
     public Commit<String> nextCommit( AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener, Commit<?> commit) throws IOException, IllegalArgumentException {
         logger.finest("Git plugin, nextCommit invoked");
         Commit<String> next = null;
-        try {
-            
+        try {            
             //Make sure that we have the latest changes before doing anything
             update(build, launcher, listener);
             BuildData gitBuildData = build.getAction(BuildData.class);
             Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();
- 
-            next = getNext(gitDataBranch);
+            next = new Commit<String>(gitDataBranch.getSHA1String());
         } catch (InterruptedException e) {
             throw new IOException(e.getMessage());
         } catch (ClassCastException e) {
             logger.finest("Configured scm is not git. Aborting...");
         }
-        this.reset = false;
         logger.finest("Git plugin, nextCommit returning");
         return next;
     }
@@ -243,11 +210,50 @@ public class GitBridge extends AbstractSCMBridge {
     @Override
     public void rollback(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws IOException, InterruptedException {
         logger.finest("Git plugin rolling back");
+        int returncode = -9999;
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        int returncode = git(build, launcher, listener, bos, "reset", "--hard", "HEAD");
+
+        Commit<?> lastIntegraion = build.getAction(PretestedIntegrationAction.class).getCurrentIntegrationTip();
+        if(lastIntegraion != null) {
+            returncode = git(build, launcher, listener, bos, "reset", "--hard", (String)lastIntegraion.getId());
+        }
+        
         if(returncode != 0) {
-            throw new IOException( String.format( "Failed to commit integrated changes, message was:%n%s", bos.toString()) );
+            if(returncode == -9999) {
+                throw new IOException("Failed to rollback changes, because the integraion tip could not be determined"); 
+            }
+            throw new IOException( String.format( "Failed to rollback changes, message was:%n%s", bos.toString()) );
         }        
+    }
+
+    @Override
+    protected Commit<?> determineIntegrationHead(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener) {
+        Commit<?> commit = null;
+        try {
+            GitClient client = Git.with(listener, build.getEnvironment(listener)).in(build.getWorkspace()).getClient();
+            for(Branch b : client.getBranches()) {
+                if(b.getName().contains(getBranch())) {
+                    commit = new Commit(b.getSHA1String());
+                }
+            }            
+        } catch (IOException ex) {
+            Logger.getLogger(GitBridge.class.getName()).log(Level.SEVERE, null, ex);
+        } catch (InterruptedException ex) {
+            Logger.getLogger(GitBridge.class.getName()).log(Level.SEVERE, null, ex);
+        }
+        return commit;
+    }
+    
+    private boolean isUseNoFf() {
+        return mergeOption.contains("no-ff");
+    }
+    
+    private boolean isUseSquash() {
+        return mergeOption.contains("squash");
+    }
+    
+    private boolean isAsIs() {
+        return mergeOption.contains("as-is");
     }
 
     /**
@@ -264,6 +270,20 @@ public class GitBridge extends AbstractSCMBridge {
         this.deleteDevelopmentBranch = deleteDevelopmentBranch;
     }
 
+    /**
+     * @return the mergeOption
+     */
+    public String getMergeOption() {
+        return mergeOption;
+    }
+
+    /**
+     * @param mergeOption the mergeOption to set
+     */
+    public void setMergeOption(String mergeOption) {
+        this.mergeOption = mergeOption;
+    }
+
     @Extension
     public static final class DescriptorImpl extends SCMBridgeDescriptor<GitBridge> {
 
@@ -273,6 +293,14 @@ public class GitBridge extends AbstractSCMBridge {
         
         public String getDisplayName() {
             return "Git";
+        }
+        
+        public ListBoxModel doFillMergeOptionItems() {
+            ListBoxModel model = new ListBoxModel();
+            model.add("Use --no-ff", "no-ff");
+            model.add("Use --squash", "squash");
+            model.add("As is", "as-is");
+            return model;
         }
         
         public static List<SCMPostBuildBehaviourDescriptor<?>> getBehaviours() {
