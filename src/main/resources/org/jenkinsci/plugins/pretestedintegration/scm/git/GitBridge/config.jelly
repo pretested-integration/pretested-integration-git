@@ -2,15 +2,14 @@
 	<f:block>
 		<f:entry title="Integration branch" field="branch">
 			<f:textbox value="${it.branch}" />
-		</f:entry>
-                
-                <f:entry title="Select merge strategy" field="mergeOption">
-                <f:select field="mergeOption" />
-
-                </f:entry>
-                <f:entry title="Additional behaviours" field="behaves" >
-                    <f:hetero-list name="behaves" descriptors="${descriptor.getBehaviours()}" items="${instance.behaves}" addCaption="Add behaviour" deleteCaption="Remove behaviour" oneEach="true" hasHeader="true"/> 
-                </f:entry>
- 
+		</f:entry>           
+                <j:choose>
+                    <j:when test="${instance.integrationStrategy == null}">
+                        <f:descriptorRadioList descriptors="${descriptor.getIntegrationStrategies()}" title="Pre-tested integration strategy" varName="integrationStrategy" instance="${descriptor.getDefaultStrategy()}"/>
+                    </j:when>
+                    <j:otherwise>
+                          <f:descriptorRadioList descriptors="${descriptor.getIntegrationStrategies()}" title="Pre-tested integration strategy" varName="integrationStrategy" instance="${instance.integrationStrategy}"/>                
+                    </j:otherwise>
+                </j:choose>
 	</f:block>
 </j:jelly>

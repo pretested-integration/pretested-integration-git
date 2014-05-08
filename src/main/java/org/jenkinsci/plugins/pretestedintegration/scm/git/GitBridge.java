@@ -1,6 +1,5 @@
 package org.jenkinsci.plugins.pretestedintegration.scm.git;
 
-import hudson.AbortException;
 import hudson.Extension;
 import hudson.FilePath;
 import hudson.Launcher;
@@ -13,13 +12,11 @@ import hudson.plugins.git.GitSCM;
 import hudson.plugins.git.util.BuildData;
 import hudson.scm.SCM;
 import hudson.util.ArgumentListBuilder;
-import hudson.util.ListBoxModel;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -32,8 +29,8 @@ import org.jenkinsci.plugins.pretestedintegration.AbstractSCMBridge;
 import org.jenkinsci.plugins.pretestedintegration.Commit;
 import org.jenkinsci.plugins.pretestedintegration.PretestedIntegrationAction;
 import org.jenkinsci.plugins.pretestedintegration.SCMBridgeDescriptor;
-import org.jenkinsci.plugins.pretestedintegration.SCMPostBuildBehaviour;
-import org.jenkinsci.plugins.pretestedintegration.SCMPostBuildBehaviourDescriptor;
+import org.jenkinsci.plugins.pretestedintegration.IntegrationStrategy;
+import org.jenkinsci.plugins.pretestedintegration.IntegrationStrategyDescriptor;
 import org.kohsuke.stapler.DataBoundConstructor;
 
 public class GitBridge extends AbstractSCMBridge {
@@ -43,8 +40,8 @@ public class GitBridge extends AbstractSCMBridge {
     private String mergeOption;
 
     @DataBoundConstructor
-    public GitBridge(List<SCMPostBuildBehaviour> behaves, final String branch, String mergeOption) {
-        super(behaves);        
+    public GitBridge(IntegrationStrategy integrationStrategy, final String branch, String mergeOption) {
+        super(integrationStrategy);        
         this.branch = branch;  
         this.mergeOption = mergeOption;
     }
@@ -126,41 +123,10 @@ public class GitBridge extends AbstractSCMBridge {
     }
 
     @Override
-    protected void ensureBranch(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener, String branch) throws IOException, InterruptedException {
+    protected void ensureBranch(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener, String branch) throws IOException, InterruptedException {
+        GitClient gitclient = Git.with(listener, build.getEnvironment(listener)).in(build.getWorkspace()).getClient();        
         logger.finest("Updating the position to the integration branch");
-        //Make sure that we are on the integration branch
-        git(build, launcher, listener, "checkout", getBranch());
-    }
-
-    @Override
-    protected void mergeChanges(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener, Commit<?> commit) throws IOException, InterruptedException {
-        int exitCode = -999;
-        int exitCodeCommit = -999;
-        
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        BuildData gitBuildData = build.getAction(BuildData.class);
-        Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();        
-        listener.getLogger().println( String.format( "Preparing to merge changes in commit %s to integration branch %s", (String) commit.getId(), getBranch() ) );
-        //int exitCode = git(build, launcher, listener, out, "merge","-m", String.format("Integrated %s", gitDataBranch.getName()), (String) commit.getId(), "--no-ff");
-        if(isUseSquash()) {
-            exitCode = git(build, launcher, listener, out, "merge", "--squash", gitDataBranch.getName());
-            exitCodeCommit = git(build, launcher, listener, out, "commit", "-m", String.format("Integrated %s", gitDataBranch.getName()));
-        } else if(isUseNoFf()) {
-            exitCode = git(build, launcher, listener, out, "merge","-m", String.format("Integrated %s", gitDataBranch.getName()), (String) commit.getId(), "--no-ff");
-        } else {
-            exitCode = git(build, launcher, listener, out, "merge",(String) commit.getId());
-        }
-        if (exitCode > 0) {
-            listener.getLogger().println("Failed to merge changes. Error message below");
-            listener.getLogger().println(out.toString());
-            throw new AbortException("Could not merge. Git output: " + out.toString());
-        }
-        
-        if (exitCodeCommit != 0 && exitCodeCommit != -999 ) {
-            listener.getLogger().println("Failed to commit merged changes. Error message below");
-            listener.getLogger().println(out.toString());
-            throw new AbortException("Could commit merges. Git output: " + out.toString());
-        }
+        gitclient.checkout().branch(getBranch()).execute();        
     }
 
     protected void update(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener) throws IOException, InterruptedException {		
@@ -208,11 +174,10 @@ public class GitBridge extends AbstractSCMBridge {
     }
 
     @Override
-    public void rollback(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws IOException, InterruptedException {
-        logger.finest("Git plugin rolling back");
+    public void rollback(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws IOException, InterruptedException {        
         int returncode = -9999;
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
-
+        
         Commit<?> lastIntegraion = build.getAction(PretestedIntegrationAction.class).getCurrentIntegrationTip();
         if(lastIntegraion != null) {
             returncode = git(build, launcher, listener, bos, "reset", "--hard", (String)lastIntegraion.getId());
@@ -243,18 +208,6 @@ public class GitBridge extends AbstractSCMBridge {
         }
         return commit;
     }
-    
-    private boolean isUseNoFf() {
-        return mergeOption.contains("no-ff");
-    }
-    
-    private boolean isUseSquash() {
-        return mergeOption.contains("squash");
-    }
-    
-    private boolean isAsIs() {
-        return mergeOption.contains("as-is");
-    }
 
     /**
      * @return the deleteDevelopmentBranch
@@ -283,7 +236,7 @@ public class GitBridge extends AbstractSCMBridge {
     public void setMergeOption(String mergeOption) {
         this.mergeOption = mergeOption;
     }
-
+    
     @Extension
     public static final class DescriptorImpl extends SCMBridgeDescriptor<GitBridge> {
 
@@ -295,21 +248,18 @@ public class GitBridge extends AbstractSCMBridge {
             return "Git";
         }
         
-        public ListBoxModel doFillMergeOptionItems() {
-            ListBoxModel model = new ListBoxModel();
-            model.add("Use --no-ff", "no-ff");
-            model.add("Use --squash", "squash");
-            model.add("As is", "as-is");
-            return model;
-        }
-        
-        public static List<SCMPostBuildBehaviourDescriptor<?>> getBehaviours() {
-            List<SCMPostBuildBehaviourDescriptor<?>> list = new ArrayList<SCMPostBuildBehaviourDescriptor<?>>();
-            for(SCMPostBuildBehaviourDescriptor<?> descr : SCMPostBuildBehaviour.all()) {
+        public static List<IntegrationStrategyDescriptor<?>> getIntegrationStrategies() {
+            List<IntegrationStrategyDescriptor<?>> list = new ArrayList<IntegrationStrategyDescriptor<?>>();
+            for(IntegrationStrategyDescriptor<?> descr : IntegrationStrategy.all()) {
                list.add(descr);
             }        
             return list;
         }
+        
+        public IntegrationStrategy getDefaultStrategy() {            
+            return new SquashCommitStrategy();
+        }
+
     }
 
     private static final Logger logger = Logger.getLogger(GitBridge.class.getName());
