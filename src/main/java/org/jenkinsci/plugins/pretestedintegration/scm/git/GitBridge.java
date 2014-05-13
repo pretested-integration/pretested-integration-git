@@ -114,15 +114,15 @@ public class GitBridge extends AbstractSCMBridge {
         return exitCode;
     }
 
+    
     @Override
-    protected void ensureBranch(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener, String branch) throws IOException, InterruptedException {
-        //GitClient gitclient = Git.with(listener, build.getEnvironment(listener)).in(build.getWorkspace()).getClient();        
-        logger.finest("Updating the position to the integration branch");
-        //gitclient.checkout().branch(getBranch()).execute();
+    public void ensureBranch(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener, String branch) throws IOException, InterruptedException {
+        logger.finest("Updating the position to the integration branch");        
         git(build, launcher, listener, "checkout", getBranch());
-        
     }
 
+    
+    
     protected void update(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener) throws IOException, InterruptedException {		
         //ensure that we have the latest version of the integration branch
         logger.finest( String.format( "Fetching latest version of integraion branch: %s", branch) );        
@@ -201,14 +201,19 @@ public class GitBridge extends AbstractSCMBridge {
 
     @Override
     public void updateBuildDescription(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws IOException, InterruptedException {
-        if (StringUtils.isBlank(build.getDescription())) {
-            BuildData gitBuildData = build.getAction(BuildData.class);
-            if(gitBuildData != null) {
-                Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();            
-                String text = build.getResult().isBetterOrEqualTo(Result.SUCCESS) ? String.format("Integrated %s", gitDataBranch.getName()) : String.format("Failed to integrate %s", gitDataBranch.getName());
-                build.setDescription(text);
-            }            
-        }
+        
+        BuildData gitBuildData = build.getAction(BuildData.class);
+        if(gitBuildData != null) {
+            Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();         
+            String text = "";
+            if(!StringUtils.isBlank(build.getDescription())) {
+                text = String.format( "%s<br/>Branch: %s", build.getDescription(), gitDataBranch.getName());
+            } else {
+                text = String.format( "Branch: %s", gitDataBranch.getName());
+            }
+            build.setDescription(text);
+        }            
+        
     }
     
     private String removeOrigin(String branchName) {

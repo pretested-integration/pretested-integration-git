@@ -15,10 +15,13 @@ import hudson.plugins.git.Branch;
 import hudson.plugins.git.util.BuildData;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import org.jenkinsci.plugins.gitclient.Git;
+import org.jenkinsci.plugins.gitclient.GitClient;
 import org.jenkinsci.plugins.pretestedintegration.AbstractSCMBridge;
 import org.jenkinsci.plugins.pretestedintegration.Commit;
 import org.jenkinsci.plugins.pretestedintegration.IntegrationStrategy;
 import org.jenkinsci.plugins.pretestedintegration.IntegrationStrategyDescriptor;
+import org.jenkinsci.plugins.pretestedintegration.NothingToDoException;
 import org.kohsuke.stapler.DataBoundConstructor;
 
 /**
@@ -40,13 +43,31 @@ public class AccumulatedCommitStrategy extends IntegrationStrategy {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         BuildData gitBuildData = build.getAction(BuildData.class);
         Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();        
+        
+        GitClient client = Git.with(listener, build.getEnvironment(listener)).in(build.getWorkspace()).getClient();
+        
+        boolean found = false;
+        for(Branch b : client.getRemoteBranches()) {
+            if(b.getName().equals(gitDataBranch.getName())) {
+                listener.getLogger().println("Branch:"+b.getName());
+                found = true;
+                break;
+            }
+        }
+        
+        if(!found) {
+            build.setDescription(String.format("Noting to do"));
+            throw new NothingToDoException();
+        }
+
         listener.getLogger().println( String.format( "Preparing to merge changes in commit %s to integration branch %s", (String) commit.getId(), gitbridge.getBranch() ) );            
         exitCode = gitbridge.git(build, launcher, listener, out, "merge","-m", String.format("Integrated %s", gitDataBranch.getName()), (String) commit.getId(), "--no-ff");
         
         if (exitCode > 0) {
-            listener.getLogger().println("Failed to merge changes. Error message below");
+            listener.getLogger().println("Failed to merge changes.");
             listener.getLogger().println(out.toString());
-            throw new AbortException("Could not merge. Git output: " + out.toString());
+            build.setDescription(String.format("Merge conflict"));
+            throw new IOException("Could not merge. Git output: " + out.toString());
         }
         
     }
