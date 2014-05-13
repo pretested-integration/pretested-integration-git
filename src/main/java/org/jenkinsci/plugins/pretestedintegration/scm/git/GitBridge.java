@@ -7,6 +7,7 @@ import hudson.Launcher.ProcStarter;
 import hudson.model.BuildListener;
 import hudson.model.TaskListener;
 import hudson.model.AbstractBuild;
+import hudson.model.Result;
 import hudson.plugins.git.Branch;
 import hudson.plugins.git.GitSCM;
 import hudson.plugins.git.util.BuildData;
@@ -36,14 +37,11 @@ import org.kohsuke.stapler.DataBoundConstructor;
 public class GitBridge extends AbstractSCMBridge {
 
     private String revId; 
-    private boolean deleteDevelopmentBranch;
-    private String mergeOption;
 
     @DataBoundConstructor
-    public GitBridge(IntegrationStrategy integrationStrategy, final String branch, String mergeOption) {
+    public GitBridge(IntegrationStrategy integrationStrategy, final String branch) {
         super(integrationStrategy);        
         this.branch = branch;  
-        this.mergeOption = mergeOption;
     }
     
     @Override
@@ -54,12 +52,6 @@ public class GitBridge extends AbstractSCMBridge {
     public String getRevId() {
         return this.revId;
     }
-    
-    /**
-     * The directory in which to execute git commands
-     */
-    private FilePath workingDirectory = null;
-    final static String LOG_PREFIX = "[PREINT-GIT] ";
 
     public void setWorkingDirectory(FilePath workingDirectory) {
         this.workingDirectory = workingDirectory;
@@ -124,9 +116,11 @@ public class GitBridge extends AbstractSCMBridge {
 
     @Override
     protected void ensureBranch(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener, String branch) throws IOException, InterruptedException {
-        GitClient gitclient = Git.with(listener, build.getEnvironment(listener)).in(build.getWorkspace()).getClient();        
+        //GitClient gitclient = Git.with(listener, build.getEnvironment(listener)).in(build.getWorkspace()).getClient();        
         logger.finest("Updating the position to the integration branch");
-        gitclient.checkout().branch(getBranch()).execute();        
+        //gitclient.checkout().branch(getBranch()).execute();
+        git(build, launcher, listener, "checkout", getBranch());
+        
     }
 
     protected void update(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener) throws IOException, InterruptedException {		
@@ -192,6 +186,39 @@ public class GitBridge extends AbstractSCMBridge {
     }
 
     @Override
+    public void deleteIntegratedBranch(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws IOException, InterruptedException {
+        BuildData gitBuildData = build.getAction(BuildData.class);
+        Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        
+        if(build.getResult().isBetterOrEqualTo(getRequiredResult())) {
+            int delRemote = git(build, launcher, listener, out, "push", "origin",":"+removeOrigin(gitDataBranch.getName()));
+            if(delRemote != 0) {
+                throw new IOException(String.format( "Failed to delete the remote branch %s with the following error:%n%s", gitDataBranch.getName(), out.toString()) );
+            } 
+        }
+    }
+
+    @Override
+    public void updateBuildDescription(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws IOException, InterruptedException {
+        if (StringUtils.isBlank(build.getDescription())) {
+            BuildData gitBuildData = build.getAction(BuildData.class);
+            if(gitBuildData != null) {
+                Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();            
+                String text = build.getResult().isBetterOrEqualTo(Result.SUCCESS) ? String.format("Integrated %s", gitDataBranch.getName()) : String.format("Failed to integrate %s", gitDataBranch.getName());
+                build.setDescription(text);
+            }            
+        }
+    }
+    
+    private String removeOrigin(String branchName) {
+        String s = branchName.substring(branchName.indexOf("/")+1, branchName.length());
+        return s;
+    }
+    
+    
+
+    @Override
     protected Commit<?> determineIntegrationHead(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener) {
         Commit<?> commit = null;
         try {
@@ -207,34 +234,6 @@ public class GitBridge extends AbstractSCMBridge {
             Logger.getLogger(GitBridge.class.getName()).log(Level.SEVERE, null, ex);
         }
         return commit;
-    }
-
-    /**
-     * @return the deleteDevelopmentBranch
-     */
-    public boolean isDeleteDevelopmentBranch() {
-        return deleteDevelopmentBranch;
-    }
-
-    /**
-     * @param deleteDevelopmentBranch the deleteDevelopmentBranch to set
-     */
-    public void setDeleteDevelopmentBranch(boolean deleteDevelopmentBranch) {
-        this.deleteDevelopmentBranch = deleteDevelopmentBranch;
-    }
-
-    /**
-     * @return the mergeOption
-     */
-    public String getMergeOption() {
-        return mergeOption;
-    }
-
-    /**
-     * @param mergeOption the mergeOption to set
-     */
-    public void setMergeOption(String mergeOption) {
-        this.mergeOption = mergeOption;
     }
     
     @Extension
@@ -262,5 +261,7 @@ public class GitBridge extends AbstractSCMBridge {
 
     }
 
+    private FilePath workingDirectory = null;
+    final static String LOG_PREFIX = "[PREINT-GIT] ";
     private static final Logger logger = Logger.getLogger(GitBridge.class.getName());
 }

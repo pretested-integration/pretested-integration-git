@@ -40,7 +40,7 @@ public class SquashCommitStrategy extends IntegrationStrategy {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         BuildData gitBuildData = build.getAction(BuildData.class);
         Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();        
-        listener.getLogger().println( String.format( "Preparing to merge changes in commit %s to integration branch %s", (String) commit.getId(), bridge.getBranch() ) );
+        listener.getLogger().println( String.format( "Preparing to merge changes in commit %s to integration branch %s", gitDataBranch.getSHA1String(), bridge.getBranch() ) );
 
         exitCode = gitbridge.git(build, launcher, listener, out, "merge", "--squash", gitDataBranch.getName());
         exitCodeCommit = gitbridge.git(build, launcher, listener, out, "commit", "-m", String.format("Integrated %s", gitDataBranch.getName()));
@@ -56,26 +56,6 @@ public class SquashCommitStrategy extends IntegrationStrategy {
             listener.getLogger().println(out.toString());
             throw new AbortException("Could commit merges. Git output: " + out.toString());
         }
-
-        /*
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        GitBridge gitBridge = (GitBridge)bridge;
-        BuildData gitBuildData = build.getAction(BuildData.class);
-        Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();
-        
-        if(build != null && build.getResult().isBetterOrEqualTo(bridge.getRequiredResult())) {
-            listener.getLogger().println(String.format("Applying behaviour '%s'", B_NAME));
-            int delRemote = gitBridge.git(build, launcher, listener, out, "push", "origin",":"+removeOrigin(gitDataBranch.getName()));
-            if(delRemote != 0) {
-                throw new IOException(String.format( "Failed to delete the remote branch %s with the following error:%n%s", gitBridge.getBranch(), out.toString()) );
-            } 
-        }
-        */
-    }
-    
-    private String removeOrigin(String branchName) {
-        String s = branchName.substring(branchName.indexOf("/")+1, branchName.length());
-        return s;
     }
     
     @Extension

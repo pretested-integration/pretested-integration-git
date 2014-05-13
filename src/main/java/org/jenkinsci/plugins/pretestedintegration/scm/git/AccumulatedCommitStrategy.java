@@ -35,7 +35,6 @@ public class AccumulatedCommitStrategy extends IntegrationStrategy {
     @Override
     public void integrate(AbstractBuild build, Launcher launcher, BuildListener listener, AbstractSCMBridge bridge, Commit<?> commit) throws IOException, InterruptedException {
         int exitCode = -999;
-        int exitCodeCommit = -999;
         GitBridge gitbridge = (GitBridge)bridge;
         
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -50,16 +49,6 @@ public class AccumulatedCommitStrategy extends IntegrationStrategy {
             throw new AbortException("Could not merge. Git output: " + out.toString());
         }
         
-        
-        //TODO:Move this somewhere else
-        /*
-        
-        listener.getLogger().println(String.format("Applying behaviour '%s'", B_NAME));
-        Result result = build.getResult();
-        if(result != null && !result.isBetterOrEqualTo(bridge.getRequiredResult())) {
-            bridge.rollback(build, launcher, listener);
-        }
-        */
     }
     
     @Extension
