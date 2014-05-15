@@ -7,7 +7,6 @@ import hudson.Launcher.ProcStarter;
 import hudson.model.BuildListener;
 import hudson.model.TaskListener;
 import hudson.model.AbstractBuild;
-import hudson.model.Result;
 import hudson.plugins.git.Branch;
 import hudson.plugins.git.GitSCM;
 import hudson.plugins.git.util.BuildData;
@@ -28,10 +27,15 @@ import org.jenkinsci.plugins.gitclient.GitClient;
 
 import org.jenkinsci.plugins.pretestedintegration.AbstractSCMBridge;
 import org.jenkinsci.plugins.pretestedintegration.Commit;
+import org.jenkinsci.plugins.pretestedintegration.exceptions.EstablishWorkspaceException;
 import org.jenkinsci.plugins.pretestedintegration.PretestedIntegrationAction;
 import org.jenkinsci.plugins.pretestedintegration.SCMBridgeDescriptor;
 import org.jenkinsci.plugins.pretestedintegration.IntegrationStrategy;
 import org.jenkinsci.plugins.pretestedintegration.IntegrationStrategyDescriptor;
+import org.jenkinsci.plugins.pretestedintegration.exceptions.CommitChangesFailureException;
+import org.jenkinsci.plugins.pretestedintegration.exceptions.DeleteIntegratedBranchException;
+import org.jenkinsci.plugins.pretestedintegration.exceptions.NextCommitFailureException;
+import org.jenkinsci.plugins.pretestedintegration.exceptions.RollbackFailureException;
 import org.kohsuke.stapler.DataBoundConstructor;
 
 public class GitBridge extends AbstractSCMBridge {
@@ -116,15 +120,22 @@ public class GitBridge extends AbstractSCMBridge {
 
     
     @Override
-    public void ensureBranch(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener, String branch) throws IOException, InterruptedException {
-        logger.finest("Updating the position to the integration branch");        
-        git(build, launcher, listener, "checkout", getBranch());
+    public void ensureBranch(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener, String branch) throws EstablishWorkspaceException {
+        listener.getLogger().println(String.format("Checking out integration target branch %s", getBranch()));
+        try {
+            git(build, launcher, listener, "checkout", getBranch());
+        } catch (IOException ex) {
+            throw new EstablishWorkspaceException(ex);
+        } catch (InterruptedException ex) {
+            throw new EstablishWorkspaceException(ex);
+        }
     }
 
     
     
     protected void update(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener) throws IOException, InterruptedException {		
         //ensure that we have the latest version of the integration branch
+        listener.getLogger().println(String.format("Fetching latest version of integration branch %s", branch));
         logger.finest( String.format( "Fetching latest version of integraion branch: %s", branch) );        
         git(build, launcher, listener, "fetch", "origin", branch);
     }
@@ -135,10 +146,10 @@ public class GitBridge extends AbstractSCMBridge {
      * branch 3. Check the next branch round-robin
      *
      * @return 
-     * @throws java.io.IOException
+     * @throws NextCommitFailureException
      */
     @Override
-    public Commit<String> nextCommit( AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener, Commit<?> commit) throws IOException, IllegalArgumentException {
+    public Commit<String> nextCommit( AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener, Commit<?> commit) throws NextCommitFailureException {
         logger.finest("Git plugin, nextCommit invoked");
         Commit<String> next = null;
         try {            
@@ -148,9 +159,12 @@ public class GitBridge extends AbstractSCMBridge {
             Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();
             next = new Commit<String>(gitDataBranch.getSHA1String());
         } catch (InterruptedException e) {
-            throw new IOException(e.getMessage());
-        } catch (ClassCastException e) {
+            throw new NextCommitFailureException(e);
+        } catch (IOException ex) {
+            throw new NextCommitFailureException(ex);
+        } catch (ClassCastException e) {            
             logger.finest("Configured scm is not git. Aborting...");
+            throw new NextCommitFailureException(e);
         }
         logger.finest("Git plugin, nextCommit returning");
         return next;
@@ -158,49 +172,62 @@ public class GitBridge extends AbstractSCMBridge {
 
     //FIXME: Yet another hardcoded origin
     @Override
-    public void commit(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws IOException, InterruptedException {
+    public void commit(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws CommitChangesFailureException {
+        int returncode = -99999;
         logger.finest("Git pre-tested-commit commiting");
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        int returncode = git(build, launcher, listener, bos, "push", "origin", getBranch());
+        try {
+            returncode = git(build, launcher, listener, bos, "push", "origin", getBranch());
+        } catch (Exception ex) {
+            logger.log(Level.WARNING, "Failed to commit changes to integration branch", ex);
+        }
+        
         if(returncode != 0) {
-            throw new IOException( String.format( "Failed to commit integrated changes, message was:%n%s", bos.toString()) );
+            throw new CommitChangesFailureException( String.format( "Failed to commit integrated changes, message was:%n%s", bos.toString()) );
         }
     }
 
     @Override
-    public void rollback(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws IOException, InterruptedException {        
+    public void rollback(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws RollbackFailureException {        
         int returncode = -9999;
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();        
         Commit<?> lastIntegraion = build.getAction(PretestedIntegrationAction.class).getCurrentIntegrationTip();
-        if(lastIntegraion != null) {
-            returncode = git(build, launcher, listener, bos, "reset", "--hard", (String)lastIntegraion.getId());
+        try {
+            if(lastIntegraion != null) {
+                returncode = git(build, launcher, listener, bos, "reset", "--hard", (String)lastIntegraion.getId());
+            } 
+        
+        } catch (Exception ex) {
+            logger.log(Level.WARNING, "Failed to roll back", ex);
         }
         
         if(returncode != 0) {
-            if(returncode == -9999) {
-                throw new IOException("Failed to rollback changes, because the integraion tip could not be determined"); 
-            }
-            throw new IOException( String.format( "Failed to rollback changes, message was:%n%s", bos.toString()) );
+            throw new RollbackFailureException( String.format( "Failed to rollback changes, message was:%n%s", bos.toString()) );
         }        
     }
 
     @Override
-    public void deleteIntegratedBranch(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws IOException, InterruptedException {
+    public void deleteIntegratedBranch(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws DeleteIntegratedBranchException {
         BuildData gitBuildData = build.getAction(BuildData.class);
         Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();
         ByteArrayOutputStream out = new ByteArrayOutputStream();
+        int delRemote = -99999;
         
         if(build.getResult().isBetterOrEqualTo(getRequiredResult())) {
-            int delRemote = git(build, launcher, listener, out, "push", "origin",":"+removeOrigin(gitDataBranch.getName()));
+            try {
+                delRemote = git(build, launcher, listener, out, "push", "origin",":"+removeOrigin(gitDataBranch.getName()));
+            } catch (Exception ex) {
+                logger.log(Level.WARNING, "Failure to delete branch", ex);
+            }
+            
             if(delRemote != 0) {
-                throw new IOException(String.format( "Failed to delete the remote branch %s with the following error:%n%s", gitDataBranch.getName(), out.toString()) );
+                throw new DeleteIntegratedBranchException(String.format( "Failed to delete the remote branch %s with the following error:%n%s", gitDataBranch.getName(), out.toString()) );
             } 
         }
     }
 
     @Override
-    public void updateBuildDescription(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws IOException, InterruptedException {
+    public void updateBuildDescription(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) {
         
         BuildData gitBuildData = build.getAction(BuildData.class);
         if(gitBuildData != null) {
@@ -210,8 +237,10 @@ public class GitBridge extends AbstractSCMBridge {
                 text = String.format( "%s<br/>Branch: %s", build.getDescription(), gitDataBranch.getName());
             } else {
                 text = String.format( "Branch: %s", gitDataBranch.getName());
-            }
-            build.setDescription(text);
+            }            
+            try {
+                build.setDescription(text);
+            } catch (Exception ex) { logger.log(Level.FINE, "Failed to update description", ex); /* Dont care */ }  
         }            
         
     }
@@ -252,10 +281,13 @@ public class GitBridge extends AbstractSCMBridge {
             return "Git";
         }
         
-        public static List<IntegrationStrategyDescriptor<?>> getIntegrationStrategies() {
+        public List<IntegrationStrategyDescriptor<?>> getIntegrationStrategies() {
             List<IntegrationStrategyDescriptor<?>> list = new ArrayList<IntegrationStrategyDescriptor<?>>();
             for(IntegrationStrategyDescriptor<?> descr : IntegrationStrategy.all()) {
-               list.add(descr);
+                
+                if(descr.isApplicable(this.clazz)) {
+                    list.add(descr);
+                }
             }        
             return list;
         }
