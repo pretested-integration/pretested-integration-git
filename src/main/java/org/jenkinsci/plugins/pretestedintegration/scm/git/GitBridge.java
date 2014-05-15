@@ -121,23 +121,24 @@ public class GitBridge extends AbstractSCMBridge {
     
     @Override
     public void ensureBranch(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener, String branch) throws EstablishWorkspaceException {
-        listener.getLogger().println(String.format("Checking out integration target branch %s", getBranch()));
+        listener.getLogger().println(String.format("Checking out integration target branch %s and pulling latest changes", getBranch()));
         try {
             git(build, launcher, listener, "checkout", getBranch());
+            update(build, launcher, listener);
         } catch (IOException ex) {
             throw new EstablishWorkspaceException(ex);
         } catch (InterruptedException ex) {
             throw new EstablishWorkspaceException(ex);
         }
     }
+    
+    private GitClient getGitClient(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener) throws InterruptedException, IOException {
+        GitClient client = Git.with(listener, build.getEnvironment(listener)).getClient();
+        return client;
+    }
 
-    
-    
-    protected void update(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener) throws IOException, InterruptedException {		
-        //ensure that we have the latest version of the integration branch
-        listener.getLogger().println(String.format("Fetching latest version of integration branch %s", branch));
-        logger.finest( String.format( "Fetching latest version of integraion branch: %s", branch) );        
-        git(build, launcher, listener, "fetch", "origin", branch);
+    protected void update(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener) throws IOException, InterruptedException {		     
+        git(build, launcher, listener, "pull", "origin", branch);
     }
     
     /**
@@ -153,28 +154,20 @@ public class GitBridge extends AbstractSCMBridge {
         logger.finest("Git plugin, nextCommit invoked");
         Commit<String> next = null;
         try {            
-            //Make sure that we have the latest changes before doing anything
-            update(build, launcher, listener);
             BuildData gitBuildData = build.getAction(BuildData.class);
             Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();
             next = new Commit<String>(gitDataBranch.getSHA1String());
-        } catch (InterruptedException e) {
-            throw new NextCommitFailureException(e);
-        } catch (IOException ex) {
-            throw new NextCommitFailureException(ex);
-        } catch (ClassCastException e) {            
-            logger.finest("Configured scm is not git. Aborting...");
+        } catch (Exception e) {            
+            logger.finest("Failed to find next commit");
             throw new NextCommitFailureException(e);
         }
         logger.finest("Git plugin, nextCommit returning");
         return next;
     }
 
-    //FIXME: Yet another hardcoded origin
     @Override
     public void commit(AbstractBuild<?, ?> build, Launcher launcher, BuildListener listener) throws CommitChangesFailureException {
         int returncode = -99999;
-        logger.finest("Git pre-tested-commit commiting");
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         try {
             returncode = git(build, launcher, listener, bos, "push", "origin", getBranch());

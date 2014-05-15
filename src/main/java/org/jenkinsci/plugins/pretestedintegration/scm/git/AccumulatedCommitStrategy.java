@@ -23,6 +23,7 @@ import org.jenkinsci.plugins.pretestedintegration.Commit;
 import org.jenkinsci.plugins.pretestedintegration.exceptions.IntegationFailedExeception;
 import org.jenkinsci.plugins.pretestedintegration.IntegrationStrategy;
 import org.jenkinsci.plugins.pretestedintegration.IntegrationStrategyDescriptor;
+import org.jenkinsci.plugins.pretestedintegration.PretestedIntegrationAction;
 import org.jenkinsci.plugins.pretestedintegration.exceptions.NothingToDoException;
 import org.kohsuke.stapler.DataBoundConstructor;
 
@@ -68,6 +69,13 @@ public class AccumulatedCommitStrategy extends IntegrationStrategy {
                 logger.log(Level.FINE, "Failed to update description", ex);
             }
             throw new NothingToDoException();
+        }
+        
+        String integrationSHA = "Not specified";
+        try {
+            integrationSHA = (String)build.getAction(PretestedIntegrationAction.class).getCurrentIntegrationTip().getId();
+        } catch (Exception ex) {
+            
         }
 
         listener.getLogger().println( String.format( "Preparing to merge changes in commit %s to integration branch %s", (String) commit.getId(), gitbridge.getBranch() ) );

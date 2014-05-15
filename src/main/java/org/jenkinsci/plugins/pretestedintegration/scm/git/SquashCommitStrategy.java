@@ -23,6 +23,7 @@ import org.jenkinsci.plugins.pretestedintegration.Commit;
 import org.jenkinsci.plugins.pretestedintegration.exceptions.IntegationFailedExeception;
 import org.jenkinsci.plugins.pretestedintegration.IntegrationStrategy;
 import org.jenkinsci.plugins.pretestedintegration.IntegrationStrategyDescriptor;
+import org.jenkinsci.plugins.pretestedintegration.PretestedIntegrationAction;
 import org.jenkinsci.plugins.pretestedintegration.exceptions.NothingToDoException;
 import org.kohsuke.stapler.DataBoundConstructor;
 /**
@@ -45,15 +46,19 @@ public class SquashCommitStrategy extends IntegrationStrategy {
         
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         BuildData gitBuildData = build.getAction(BuildData.class);
-        Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();        
-        listener.getLogger().println( String.format( "Preparing to merge changes in commit %s to integration branch %s", gitDataBranch.getSHA1String(), bridge.getBranch() ) );        
+        Branch gitDataBranch = gitBuildData.lastBuild.revision.getBranches().iterator().next();
+        
+        String integrationSHA = "Not specified";
+        try {
+            integrationSHA = (String)build.getAction(PretestedIntegrationAction.class).getCurrentIntegrationTip().getId();
+        } catch (Exception ex) {
+            
+        }
+        listener.getLogger().println( String.format( "Preparing to merge changes in commit %s to integration branch %s(%s)", gitDataBranch.getSHA1String(), bridge.getBranch(), integrationSHA) );        
         boolean found = false;
         try {
             GitClient client = Git.with(listener, build.getEnvironment(listener)).in(build.getWorkspace()).getClient();
-
-
             for(Branch b : client.getRemoteBranches()) {
-                listener.getLogger().println("Branch:"+b.getName());
                 if(b.getName().equals(gitDataBranch.getName())) {
                     found = true;
                     break;
@@ -94,11 +99,21 @@ public class SquashCommitStrategy extends IntegrationStrategy {
         if (exitCodeCommit != 0 && exitCodeCommit != -999 ) {
             listener.getLogger().println("Failed to commit merged changes. Error message below");
             listener.getLogger().println(out.toString());
+            
             try {
-                build.setDescription(String.format("Failed to commit merges"));
+                if(out.toString().contains("nothing to commit")) {
+                    build.setDescription(String.format("Nothing to do"));
+                } else {
+                    build.setDescription(String.format("Failed to commit merges"));
+                }
             } catch (IOException ex ) {
                 logger.log(Level.FINE, "Failed to update description", ex);
             }
+            
+            if(out.toString().contains("nothing to commit")) {
+                throw new NothingToDoException();
+            }
+            
             throw new IntegationFailedExeception("Could commit merges. Git output: " + out.toString());
         }
     }
