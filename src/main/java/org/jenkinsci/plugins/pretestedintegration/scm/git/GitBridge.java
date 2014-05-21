@@ -193,8 +193,8 @@ public class GitBridge extends AbstractSCMBridge {
         } catch (Exception ex) {
             logger.log(Level.WARNING, "Failed to roll back", ex);
         }
-        
-        if(returncode != 0) {
+        //If the return code is -9999 that means no previous pre-test action
+        if(returncode != 0 && returncode != -9999) {
             throw new RollbackFailureException( String.format( "Failed to rollback changes, message was:%n%s", bos.toString()) );
         }        
     }
