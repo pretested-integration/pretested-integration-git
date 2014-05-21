@@ -131,11 +131,6 @@ public class GitBridge extends AbstractSCMBridge {
             throw new EstablishWorkspaceException(ex);
         }
     }
-    
-    private GitClient getGitClient(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener) throws InterruptedException, IOException {
-        GitClient client = Git.with(listener, build.getEnvironment(listener)).getClient();
-        return client;
-    }
 
     protected void update(AbstractBuild<?, ?> build, Launcher launcher, TaskListener listener) throws IOException, InterruptedException {		     
         git(build, launcher, listener, "pull", "origin", branch);
@@ -193,6 +188,7 @@ public class GitBridge extends AbstractSCMBridge {
         } catch (Exception ex) {
             logger.log(Level.WARNING, "Failed to roll back", ex);
         }
+        
         //If the return code is -9999 that means no previous pre-test action
         if(returncode != 0 && returncode != -9999) {
             throw new RollbackFailureException( String.format( "Failed to rollback changes, message was:%n%s", bos.toString()) );
